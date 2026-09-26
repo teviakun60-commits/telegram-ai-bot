@@ -263,7 +263,7 @@ Pesan member:
     except Exception as e:
     print(f"Gemini error: {e}", flush=True)
     await update.message.reply_text("⚠️ Maaf, AI sedang tidak dapat menjawab.")
-        )
+        
 
 
 # =========================
