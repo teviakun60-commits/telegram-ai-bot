@@ -1,7 +1,7 @@
-
-import json
 import os
-import logging
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
 from telegram.ext import (
@@ -12,28 +12,39 @@ from telegram.ext import (
     filters,
 )
 
+from google import genai
+
+
 # =========================
-# PENGATURAN
+# ENVIRONMENT VARIABLES
 # =========================
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PORT = int(os.getenv("PORT", "10000"))
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN belum diatur di Render.")
+
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY belum diatur di Render.")
+
+
+# =========================
+# GEMINI AI
+# =========================
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# =========================
+# FILTER
+# =========================
 
 FILTER_FILE = "filters.json"
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-
-# =========================
-# DATABASE KATA FILTER
-# =========================
 
 def load_filters():
-    if not os.path.exists(FILTER_FILE):
-        return []
-
     try:
         with open(FILTER_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -41,9 +52,9 @@ def load_filters():
         return []
 
 
-def save_filters(words):
+def save_filters():
     with open(FILTER_FILE, "w", encoding="utf-8") as f:
-        json.dump(words, f, ensure_ascii=False, indent=2)
+        json.dump(FILTER_WORDS, f, ensure_ascii=False, indent=2)
 
 
 FILTER_WORDS = load_filters()
@@ -54,6 +65,7 @@ FILTER_WORDS = load_filters()
 # =========================
 
 async def is_admin(update: Update):
+
     if not update.effective_chat or not update.effective_user:
         return False
 
@@ -64,8 +76,7 @@ async def is_admin(update: Update):
 
         return member.status in ["administrator", "creator"]
 
-    except Exception as e:
-        logging.error(e)
+    except:
         return False
 
 
@@ -74,83 +85,83 @@ async def is_admin(update: Update):
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
-        "🤖 Bot aktif!\n\n"
+        "🤖 Halo! Saya bot AI grup.\n\n"
+        "Saya bisa menjawab pesan member dan menghapus pesan "
+        "yang mengandung kata filter.\n\n"
         "Perintah admin:\n"
-        "/tambah kata - menambah kata filter\n"
-        "/hapus kata - menghapus kata filter\n"
-        "/daftar - melihat daftar kata filter\n\n"
-        "Contoh:\n"
-        "/tambah kata1\n"
-        "/tambah kata2"
+        "/tambah kata\n"
+        "/hapus kata\n"
+        "/daftar"
     )
 
 
 # =========================
-# TAMBAH KATA
+# TAMBAH FILTER
 # =========================
 
 async def tambah(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_admin(update):
         await update.message.reply_text(
-            "❌ Hanya admin grup yang boleh menambah kata filter."
+            "❌ Perintah ini hanya untuk admin."
         )
         return
 
     if not context.args:
         await update.message.reply_text(
-            "Gunakan:\n/tambah kata\n\nContoh:\n/tambah kata terlarang"
+            "Contoh:\n/tambah kata terlarang"
         )
         return
 
-    word = " ".join(context.args).strip().lower()
+    word = " ".join(context.args).lower().strip()
 
     if word in FILTER_WORDS:
         await update.message.reply_text(
-            f"⚠️ Kata '{word}' sudah ada di daftar filter."
+            "⚠️ Kata tersebut sudah ada."
         )
         return
 
     FILTER_WORDS.append(word)
-    save_filters(FILTER_WORDS)
+    save_filters()
 
     await update.message.reply_text(
-        f"✅ Kata '{word}' berhasil ditambahkan ke filter."
+        f"✅ Filter ditambahkan:\n{word}"
     )
 
 
 # =========================
-# HAPUS KATA
+# HAPUS FILTER
 # =========================
 
 async def hapus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_admin(update):
         await update.message.reply_text(
-            "❌ Hanya admin grup yang boleh menghapus kata filter."
+            "❌ Perintah ini hanya untuk admin."
         )
         return
 
     if not context.args:
         await update.message.reply_text(
-            "Gunakan:\n/hapus kata\n\nContoh:\n/hapus kata terlarang"
+            "Contoh:\n/hapus kata terlarang"
         )
         return
 
-    word = " ".join(context.args).strip().lower()
+    word = " ".join(context.args).lower().strip()
 
     if word not in FILTER_WORDS:
         await update.message.reply_text(
-            f"⚠️ Kata '{word}' tidak ditemukan."
+            "⚠️ Kata tersebut tidak ada."
         )
         return
 
     FILTER_WORDS.remove(word)
-    save_filters(FILTER_WORDS)
+    save_filters()
 
     await update.message.reply_text(
-        f"✅ Kata '{word}' berhasil dihapus dari filter."
+        f"✅ Filter dihapus:\n{word}"
     )
 
 
@@ -162,52 +173,132 @@ async def daftar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not FILTER_WORDS:
         await update.message.reply_text(
-            "📋 Daftar filter masih kosong."
+            "📋 Belum ada kata filter."
         )
         return
 
-    daftar_kata = "\n".join(
-        f"{i + 1}. {word}"
-        for i, word in enumerate(FILTER_WORDS)
-    )
+    teks = "📋 DAFTAR FILTER:\n\n"
 
-    await update.message.reply_text(
-        "📋 DAFTAR KATA FILTER:\n\n" + daftar_kata
-    )
+    for nomor, word in enumerate(FILTER_WORDS, 1):
+        teks += f"{nomor}. {word}\n"
+
+    await update.message.reply_text(teks)
 
 
 # =========================
-# FILTER PESAN
+# PROSES PESAN MEMBER
 # =========================
 
-async def filter_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
-    text = update.message.text.lower()
+    if not update.message.text:
+        return
 
-    # Jangan proses perintah bot
+    text = update.message.text.strip()
+
+    # Jangan proses command
     if text.startswith("/"):
         return
 
+    # =====================
+    # CEK KATA FILTER
+    # =====================
+
+    lower_text = text.lower()
+
     for word in FILTER_WORDS:
 
-        if word.lower() in text:
+        if word.lower() in lower_text:
 
             try:
                 await update.message.delete()
 
-                logging.info(
-                    f"Pesan dihapus karena mengandung: {word}"
+                print(
+                    f"🗑️ Pesan dihapus karena filter: {word}"
                 )
 
             except Exception as e:
-                logging.error(
+
+                print(
                     f"Gagal menghapus pesan: {e}"
                 )
 
-            break
+            return
+
+
+    # =====================
+    # JAWAB DENGAN AI
+    # =====================
+
+    try:
+
+        prompt = f"""
+Kamu adalah AI assistant di grup Telegram.
+
+Jawab pesan member dengan ramah, singkat,
+jelas dan menggunakan bahasa Indonesia.
+
+Jangan mengaku sebagai manusia.
+
+Pesan member:
+{text}
+"""
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+
+        answer = response.text
+
+        if answer:
+            await update.message.reply_text(answer)
+
+    except Exception as e:
+
+        print(f"Gemini error: {e}")
+
+        await update.message.reply_text(
+            "⚠️ Maaf, AI sedang tidak dapat menjawab."
+        )
+
+
+# =========================
+# SERVER HTTP UNTUK RENDER
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
+        self.wfile.write(
+            b"Telegram AI Bot is running!"
+        )
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_server():
+
+    server = HTTPServer(
+        ("0.0.0.0", PORT),
+        HealthHandler
+    )
+
+    print(f"🌐 HTTP server berjalan di port {PORT}")
+
+    server.serve_forever()
 
 
 # =========================
@@ -216,28 +307,43 @@ async def filter_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    if not TOKEN:
-        raise ValueError(
-            "BOT_TOKEN belum diatur di Environment Variables Render."
-        )
+    # Jalankan HTTP server
+    threading.Thread(
+        target=start_server,
+        daemon=True
+    ).start()
 
-    app = Application.builder().token(TOKEN).build()
+    # Telegram
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
-    # Command
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tambah", tambah))
-    app.add_handler(CommandHandler("hapus", hapus))
-    app.add_handler(CommandHandler("daftar", daftar))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
 
-    # Filter semua pesan teks
+    app.add_handler(
+        CommandHandler("tambah", tambah)
+    )
+
+    app.add_handler(
+        CommandHandler("hapus", hapus)
+    )
+
+    app.add_handler(
+        CommandHandler("daftar", daftar)
+    )
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            filter_message
+            handle_message
         )
     )
 
-    print("🤖 Bot aktif...")
+    print("🤖 Bot AI aktif...")
 
     app.run_polling()
 
